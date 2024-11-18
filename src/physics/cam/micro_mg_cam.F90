@@ -12,7 +12,7 @@ module micro_mg_cam
 ! for adding inputs is as follows:
 !
 ! 1) In addition to any variables you need to declare for the "unpacked"
-!    (CAM format) version, you must declare an array for the "packed" 
+!    (CAM format) version, you must declare an array for the "packed"
 !    (MG format) version.
 !
 ! 2) Add a call similar to the following line (look before the
@@ -32,14 +32,14 @@ module micro_mg_cam
 ! How to add new packed MG outputs to micro_mg_cam_tend:
 !
 ! 1) As with inputs, in addition to the unpacked outputs you must declare
-!    an array for packed data. The unpacked and packed arrays must *also* 
+!    an array for packed data. The unpacked and packed arrays must *also*
 !    be targets or pointers (but cannot be both).
 !
 ! 2) Add the field to post-processing as in the following line (again,
 !    there are many examples before the micro_mg_tend calls):
 !
 !      call post_proc%add_field(p(final_array),p(packed_array))
-!  
+!
 !    *** IMPORTANT ** If the fields are only being passed to a certain version of
 !    MG, you must only add them if that version is being called (see
 !    the "if (micro_mg_version >1)" sections below
@@ -119,6 +119,9 @@ logical :: micro_mg_adjust_cpt  = .false.
 character(len=16) :: micro_mg_precip_frac_method = 'max_overlap' ! type of precipitation fraction method
 
 real(r8)          :: micro_mg_berg_eff_factor    = 1.0_r8        ! berg efficiency factor
+
+real(r8)          :: micro_mg_falspeed_factor      = 1.0_r8       !
+real(r8)          :: micro_mg_falspeed_temp        = 0.0_r8       !
 
 logical, public :: do_cldliq ! Prognose cldliq flag
 logical, public :: do_cldice ! Prognose cldice flag
@@ -240,7 +243,7 @@ integer :: &
    frzdep_idx = -1
 
    logical :: allow_sed_supersat  ! allow supersaturated conditions after sedimentation loop
-   logical :: micro_do_sb_physics = .false. ! do SB 2001 autoconversion and accretion 
+   logical :: micro_do_sb_physics = .false. ! do SB 2001 autoconversion and accretion
 
 interface p
    module procedure p1
@@ -274,7 +277,8 @@ subroutine micro_mg_cam_readnl(nlfile)
   namelist /micro_mg_nl/ micro_mg_version, micro_mg_sub_version, &
        micro_mg_do_cldice, micro_mg_do_cldliq, micro_mg_num_steps, &
        microp_uniform, micro_mg_dcs, micro_mg_precip_frac_method,  &
-       micro_mg_berg_eff_factor, micro_do_sb_physics, micro_mg_adjust_cpt, &
+       micro_mg_berg_eff_factor, micro_mg_falspeed_factor, micro_mg_falspeed_temp, &
+       micro_do_sb_physics, micro_mg_adjust_cpt, &
        micro_mg_nccons, micro_mg_nicons, micro_mg_ncnst, micro_mg_ninst
   !-----------------------------------------------------------------------------
 
@@ -345,6 +349,12 @@ subroutine micro_mg_cam_readnl(nlfile)
   call mpi_bcast(micro_mg_berg_eff_factor, 1, mpi_real8, mstrid, mpicom, ierr)
   if (ierr /= 0) call endrun(sub//": FATAL: mpi_bcast: micro_mg_berg_eff_factor")
 
+  call mpi_bcast(micro_mg_falspeed_factor, 1, mpi_real8, mstrid, mpicom, ierr)
+  if (ierr /= 0) call endrun(sub//": FATAL: mpi_bcast: micro_mg_falspeed_factor")
+
+  call mpi_bcast(micro_mg_falspeed_temp, 1, mpi_real8, mstrid, mpicom, ierr)
+  if (ierr /= 0) call endrun(sub//": FATAL: mpi_bcast: micro_mg_falspeed_temp")
+
   call mpi_bcast(micro_mg_precip_frac_method, 16, mpi_character, mstrid, mpicom, ierr)
   if (ierr /= 0) call endrun(sub//": FATAL: mpi_bcast: micro_mg_precip_frac_method")
 
@@ -377,6 +387,8 @@ subroutine micro_mg_cam_readnl(nlfile)
      write(iulog,*) '  microp_uniform              = ', microp_uniform
      write(iulog,*) '  micro_mg_dcs                = ', micro_mg_dcs
      write(iulog,*) '  micro_mg_berg_eff_factor    = ', micro_mg_berg_eff_factor
+     write(iulog,*) '  micro_mg_falspeed_factor      = ', micro_mg_falspeed_factor
+     write(iulog,*) '  micro_mg_falspeed_temp        = ', micro_mg_falspeed_temp
      write(iulog,*) '  micro_mg_precip_frac_method = ', micro_mg_precip_frac_method
      write(iulog,*) '  micro_do_sb_physics         = ', micro_do_sb_physics
      write(iulog,*) '  micro_mg_adjust_cpt         = ', micro_mg_adjust_cpt
@@ -714,7 +726,7 @@ subroutine micro_mg_cam_init(pbuf2d)
               micro_mg_precip_frac_method, micro_mg_berg_eff_factor, &
               allow_sed_supersat, micro_do_sb_physics,          &
               micro_mg_nccons, micro_mg_nicons, micro_mg_ncnst, &
-              micro_mg_ninst, errstring)
+              micro_mg_ninst, errstring, micro_mg_falspeed_factor,micro_mg_falspeed_temp)
       end select
    end select
 
@@ -819,8 +831,8 @@ subroutine micro_mg_cam_init(pbuf2d)
       call addfld('FICE_SCOL', (/'psubcols','lev     '/), 'I', 'fraction', &
            'Sub-column fractional ice content within cloud', flag_xyfill=.true., fill_value=1.e30_r8)
    end if
-   
-   
+
+
    ! This is only if the coldpoint temperatures are being adjusted.
    ! NOTE: Some fields related to these and output later are added in tropopause.F90.
    if (micro_mg_adjust_cpt) then
@@ -1100,9 +1112,9 @@ subroutine micro_mg_cam_tend(state, ptend, dtime, pbuf)
    integer, allocatable :: mgcols(:) ! Columns with microphysics performed
 
    ! Find the number of levels used in the microphysics.
-   nlev  = pver - top_lev + 1 
+   nlev  = pver - top_lev + 1
    ncol  = state%ncol
-   
+
    select case (micro_mg_version)
    case (1)
       call micro_mg_get_cols1_0(ncol, nlev, top_lev, state%q(:,:,ixcldliq), &
@@ -1580,7 +1592,7 @@ subroutine micro_mg_cam_tend_pack(state, ptend, dtime, pbuf, mgncol, mgcols, nle
    real(r8) :: nr_grid(pcols,pver)
    real(r8) :: qs_grid(pcols,pver)
    real(r8) :: ns_grid(pcols,pver)
-   
+
    real(r8) :: cp_rh(pcols,pver)
    real(r8) :: cp_t(pcols)
    real(r8) :: cp_z(pcols)
@@ -1803,7 +1815,7 @@ subroutine micro_mg_cam_tend_pack(state, ptend, dtime, pbuf, mgncol, mgcols, nle
    call pbuf_get_field(pbuf, evprain_st_idx,  evprain_st_grid)
    call pbuf_get_field(pbuf, evpsnow_st_idx,  evpsnow_st_grid)
       call pbuf_get_field(pbuf, am_evp_st_idx,   am_evp_st_grid)
-   
+
    !-------------------------------------------------------------------------------------
    ! Microphysics assumes 'liquid stratus frac = ice stratus frac
    !                      = max( liquid stratus frac, ice stratus frac )'.
@@ -3015,9 +3027,9 @@ subroutine micro_mg_cam_tend_pack(state, ptend, dtime, pbuf, mgncol, mgcols, nle
       cp_rh(:ncol, :pver)  = 0._r8
 
       do i = 1, ncol
-      
+
          ! Calculate the RH including any T change that we make.
-         do k = top_lev, pver 
+         do k = top_lev, pver
            call qsat(state_loc%t(i,k), state_loc%pmid(i,k), es, qs)
            cp_rh(i,k) = state_loc%q(i, k, 1) / qs * 100._r8
          end do
