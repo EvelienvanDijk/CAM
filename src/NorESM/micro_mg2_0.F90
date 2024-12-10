@@ -319,7 +319,6 @@ subroutine micro_mg_init( &
   else
     micro_mg_falspeed_factor = 1.0_r8
   endif
-  if
 
   if (present(micro_mg_falspeed_temp_in)) then
    micro_mg_falspeed_temp = micro_mg_falspeed_temp_in
@@ -900,6 +899,8 @@ subroutine micro_mg_tend ( &
   ! Varaibles to scale fall velocity between small and regular ice regimes.
   real(r8) :: irad
   real(r8) :: ifrac
+  real(r8) :: l_falf ! local fallout speedup factor
+
 
   !cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 
@@ -2261,14 +2262,21 @@ subroutine micro_mg_tend ( &
 
         ! calculate number and mass weighted fall velocity for cloud ice
 
+        ! calculate local fall speedup factor depending on the temperature:
+        l_falf = 1.0_r8
+        if (t(i,k) <= micro_mg_falspeed_temp) then
+           l_falf = micro_mg_falspeed_factor
+        else
+           l_falf = 1.0_r8
+        endif
         if (dumi(i,k).ge.qsmall) then
 
-           vtrmi(i,k)=min(ain(i,k)*gamma_bi_plus4/(6._r8*lami(i,k)**bi), &
+           vtrmi(i,k)=min(l_falf*ain(i,k)*gamma_bi_plus4/(6._r8*lami(i,k)**bi), &
                 1.2_r8*rhof(i,k))
 
            fi(i,k) = g*rho(i,k)*vtrmi(i,k)
            fni(i,k) = g*rho(i,k)* &
-                min(ain(i,k)*gamma_bi_plus1/lami(i,k)**bi,1.2_r8*rhof(i,k))
+                min(l_falf*ain(i,k)*gamma_bi_plus1/lami(i,k)**bi,1.2_r8*rhof(i,k))
 
            ! adjust the ice fall velocity for smaller (r < 20 um) ice
            ! particles (blend over 18-20 um)
@@ -2278,14 +2286,14 @@ subroutine micro_mg_tend ( &
            if (ifrac .lt. 1._r8) then
               vtrmi(i,k) = ifrac * vtrmi(i,k) + &
                  (1._r8 - ifrac) * &
-                 min(ajn(i,k)*gamma_bj_plus4/(6._r8*lami(i,k)**bj), &
+                 min(l_falf*ajn(i,k)*gamma_bj_plus4/(6._r8*lami(i,k)**bj), &
                  1.2_r8*rhof(i,k))
 
               fi(i,k) = g*rho(i,k)*vtrmi(i,k)
               fni(i,k) = ifrac * fni(i,k) + &
                  (1._r8 - ifrac) * &
                  g*rho(i,k)* &
-                 min(ajn(i,k)*gamma_bj_plus1/lami(i,k)**bj,1.2_r8*rhof(i,k))
+                 min(l_falf*ajn(i,k)*gamma_bj_plus1/lami(i,k)**bj,1.2_r8*rhof(i,k))
            end if
         else
            fi(i,k) = 0._r8
@@ -2384,14 +2392,8 @@ subroutine micro_mg_tend ( &
      do n = 1,nstep
 
         if (do_cldice) then
-           do k = 1,nlev
-           falouti  = fi(i,k)  * dumi(i,k)
-           faloutni = fni(i,k) * dumni(i,k)
-              if (t(i,k) < micro_mg_falspeed_temp) then
-                 falouti  = fi(i,k)  * dumi(i,k) * micro_mg_falspeed_factor
-                 faloutni = fni(i,k) * dumni(i,k) * micro_mg_falspeed_factor
-              endif
-           end do
+           falouti  = fi(i,:)  * dumi(i,:)
+           faloutni = fni(i,:) * dumni(i,:)
         else
            falouti  = 0._r8
            faloutni = 0._r8
